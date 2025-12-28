@@ -29,14 +29,17 @@ LIBS="-ldl"  # 链接 dlopen
 # 默认使用 real 版本（真正使用 QNN SDK API）
 TARGET="qnn_uma_real_demo"
 SRC="qnn_uma_real_demo.cpp"
+OP_PACKAGE_SRC="custom_multiply_op_package.cpp"
 
 # 如果指定了参数，使用对应版本
 if [ "$1" == "real" ] || [ -z "$1" ]; then
     TARGET="qnn_uma_real_demo"
     SRC="qnn_uma_real_demo.cpp"
+    OP_PACKAGE_SRC="custom_multiply_op_package.cpp"
 elif [ "$1" == "operator" ]; then
     TARGET="qnn_uma_operator_demo"
     SRC="qnn_uma_operator_demo.cpp"
+    OP_PACKAGE_SRC=""
     INCLUDES="-I$(pwd)/include"  # operator 版本不需要 QNN SDK 头文件
 elif [ -n "$1" ]; then
     echo "未知参数: $1"
@@ -48,7 +51,13 @@ fi
 
 # 编译
 echo "正在编译..."
-$CXX $CXXFLAGS $INCLUDES -o $TARGET $SRC $LIBS
+if [ -n "$OP_PACKAGE_SRC" ]; then
+    # 编译包含 OpPackage 模块的版本
+    $CXX $CXXFLAGS $INCLUDES -o $TARGET $SRC $OP_PACKAGE_SRC $LIBS
+else
+    # 编译不包含 OpPackage 的版本
+    $CXX $CXXFLAGS $INCLUDES -o $TARGET $SRC $LIBS
+fi
 
 if [ $? -ne 0 ]; then
     echo "编译失败！"
