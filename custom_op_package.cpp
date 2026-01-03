@@ -1,9 +1,10 @@
 #include "custom_op_package.h"
+#include "CPU/QnnCpuOpPackage.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-// 自定义乘法算子的实现
+// 自定义乘法算子的实现（CPU 版本）
 // 乘数硬编码在 kernel 内（3.0）
 static Qnn_ErrorHandle_t custom_op_impl_internal(QnnCpuOpPackage_Node_t* node) {
     if (node->numOfInputs != 1 || node->numOfOutputs != 1) {
@@ -37,7 +38,7 @@ static Qnn_ErrorHandle_t custom_op_impl_internal(QnnCpuOpPackage_Node_t* node) {
 }
 
 // 直接调用自定义算子的包装函数（用于简化调用）
-Qnn_ErrorHandle_t CustomOp_execute(QnnCpuOpPackage_Node_t* node) {
+extern "C" Qnn_ErrorHandle_t CustomOp_execute(QnnCpuOpPackage_Node_t* node) {
     return custom_op_impl_internal(node);
 }
 

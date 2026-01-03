@@ -3,8 +3,8 @@
 set -e  # 遇到错误立即退出
 
 # 配置
-NDK_ROOT="/home/yinrun/Android/Sdk/ndk/29.0.13599879"
-TOOLCHAIN="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64"
+NDK_ROOT="/Users/yinrun/Library/Android/sdk/ndk/29.0.13113456"
+TOOLCHAIN="$NDK_ROOT/toolchains/llvm/prebuilt/darwin-x86_64"
 CXX="$TOOLCHAIN/bin/aarch64-linux-android21-clang++"
 
 # 构建目录
@@ -37,10 +37,11 @@ echo ""
 # 推送文件到设备
 echo "推送文件到设备..."
 adb push $TARGET /data/local/tmp/$(basename $TARGET) > /dev/null
+adb push fill_array.cl /data/local/tmp/fill_array.cl > /dev/null
 adb shell chmod 755 /data/local/tmp/$(basename $TARGET) > /dev/null
 echo "✓ 推送成功"
 echo ""
 
 # 运行测试
 echo "=== 运行测试 ==="
-adb shell "LD_LIBRARY_PATH=/vendor/lib64:/system/lib64 /data/local/tmp/$(basename $TARGET)"
+adb shell "cd /data/local/tmp && LD_LIBRARY_PATH=/vendor/lib64:/system/lib64 /data/local/tmp/$(basename $TARGET)"
