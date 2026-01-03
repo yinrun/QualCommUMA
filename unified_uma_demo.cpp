@@ -620,7 +620,10 @@ int main() {
         return 1;
     }
 
-    clFinish(res.cl_queue);
+    // clFinish(res.cl_queue);
+    // clFlush to confirm jobs is submitted to device.
+    clFlush(res.cl_queue);
+    sleep(1);
     #if defined(__GNUC__) || defined(__clang__)
         __sync_synchronize();
     #endif
