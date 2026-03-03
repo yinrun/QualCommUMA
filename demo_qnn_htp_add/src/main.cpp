@@ -210,9 +210,9 @@ void setHtpHighPerformanceMode(const QNN_INTERFACE_VER_TYPE& qnnInterface) {
   QnnHtpPerfInfrastructure_PowerConfig_t dcvsConfig =
       QNN_HTP_PERF_INFRASTRUCTURE_POWER_CONFIG_INIT;
   dcvsConfig.option = QNN_HTP_PERF_INFRASTRUCTURE_POWER_CONFIGOPTION_DCVS_V3;
-  dcvsConfig.dcvsV3Config.contextId       = 0;
+  dcvsConfig.dcvsV3Config.contextId       = powerConfigId;
   dcvsConfig.dcvsV3Config.setDcvsEnable   = 1;
-  dcvsConfig.dcvsV3Config.dcvsEnable      = 1;
+  dcvsConfig.dcvsV3Config.dcvsEnable      = 0;
   dcvsConfig.dcvsV3Config.powerMode       = QNN_HTP_PERF_INFRASTRUCTURE_POWERMODE_PERFORMANCE_MODE;
   dcvsConfig.dcvsV3Config.setSleepDisable = 1;
   dcvsConfig.dcvsV3Config.sleepDisable    = 1;
@@ -243,7 +243,7 @@ void setHtpHighPerformanceMode(const QNN_INTERFACE_VER_TYPE& qnnInterface) {
   const QnnHtpPerfInfrastructure_PowerConfig_t* powerConfigs[] = {
       &dcvsConfig, &hmxConfig, nullptr};
   perf.setPowerConfig(powerConfigId, powerConfigs);
-  perf.destroyPowerConfigId(powerConfigId);
+  // Do NOT destroy — keep power config alive during execution
 }
 
 uint32_t getHtpCoreCount(const QNN_INTERFACE_VER_TYPE& qnnInterface) {
