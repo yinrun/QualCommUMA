@@ -539,43 +539,52 @@ int main() {
     execOutputs.push_back(out);
   }
 
-  // Soft warmup (one run) before timing.
-  if (!checkStatus(qnn.graphExecute(graphHandle,
-                                    execInputs.data(),
-                                    static_cast<uint32_t>(execInputs.size()),
-                                    execOutputs.data(),
-                                    static_cast<uint32_t>(execOutputs.size()),
-                                    nullptr,
-                                    nullptr),
-                   "graphExecute warmup")) {
-    releaseRegisteredBuffers(qnn, input0Buffers);
-    releaseRegisteredBuffers(qnn, input1Buffers);
-    releaseRegisteredBuffers(qnn, outputBuffers);
-    return cleanupAndExit(qnn, backendHandle, deviceHandle, contextHandle, backendLibHandle, true, true);
+  // Warmup (3 runs)
+  for (int w = 0; w < 3; ++w) {
+    if (!checkStatus(qnn.graphExecute(graphHandle,
+                                      execInputs.data(),
+                                      static_cast<uint32_t>(execInputs.size()),
+                                      execOutputs.data(),
+                                      static_cast<uint32_t>(execOutputs.size()),
+                                      nullptr,
+                                      nullptr),
+                     "graphExecute warmup")) {
+      releaseRegisteredBuffers(qnn, input0Buffers);
+      releaseRegisteredBuffers(qnn, input1Buffers);
+      releaseRegisteredBuffers(qnn, outputBuffers);
+      return cleanupAndExit(qnn, backendHandle, deviceHandle, contextHandle, backendLibHandle, true, true);
+    }
   }
 
-  const auto t0 = std::chrono::steady_clock::now();
-  const auto execStatus = qnn.graphExecute(graphHandle,
-                                           execInputs.data(),
-                                           static_cast<uint32_t>(execInputs.size()),
-                                           execOutputs.data(),
-                                           static_cast<uint32_t>(execOutputs.size()),
-                                           nullptr,
-                                           nullptr);
-  const auto t1 = std::chrono::steady_clock::now();
-  if (!checkStatus(execStatus, "graphExecute")) {
-    releaseRegisteredBuffers(qnn, input0Buffers);
-    releaseRegisteredBuffers(qnn, input1Buffers);
-    releaseRegisteredBuffers(qnn, outputBuffers);
-    return cleanupAndExit(qnn, backendHandle, deviceHandle, contextHandle, backendLibHandle, true, true);
+  // Timed run: 3 iterations, take average
+  constexpr int kNumRuns = 3;
+  double totalMs = 0.0;
+  for (int run = 0; run < kNumRuns; ++run) {
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto execStatus = qnn.graphExecute(graphHandle,
+                                             execInputs.data(),
+                                             static_cast<uint32_t>(execInputs.size()),
+                                             execOutputs.data(),
+                                             static_cast<uint32_t>(execOutputs.size()),
+                                             nullptr,
+                                             nullptr);
+    const auto t1 = std::chrono::steady_clock::now();
+    if (!checkStatus(execStatus, "graphExecute")) {
+      releaseRegisteredBuffers(qnn, input0Buffers);
+      releaseRegisteredBuffers(qnn, input1Buffers);
+      releaseRegisteredBuffers(qnn, outputBuffers);
+      return cleanupAndExit(qnn, backendHandle, deviceHandle, contextHandle, backendLibHandle, true, true);
+    }
+    double runMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t1 - t0).count();
+    totalMs += runMs;
+    std::cout << "  run " << (run + 1) << ": " << runMs << " ms" << std::endl;
   }
-  const double totalMs =
-      std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t1 - t0).count();
-  const double perTileMs = totalMs / static_cast<double>(numTiles);
-  const double totalBytes =
+  const double avgMs = totalMs / kNumRuns;
+  const double perTileMs = avgMs / static_cast<double>(numTiles);
+  const double totalDataBytes =
       static_cast<double>(kTotalElements) * sizeof(int8_t) * 3.0;  // inA + inB + out
   const double bandwidthGBps =
-      (totalBytes / (1024.0 * 1024.0 * 1024.0)) / (totalMs / 1000.0);
+      (totalDataBytes / (1024.0 * 1024.0 * 1024.0)) / (avgMs / 1000.0);
 
   int maxError = 0;
   const size_t total = static_cast<size_t>(kTotalElements);
@@ -590,10 +599,11 @@ int main() {
       maxError = diff;
     }
   }
-  std::cout << "[QNN] Done. max_error=" << maxError
+  std::cout << "[QNN] Done. runs=" << kNumRuns
+            << " max_error=" << maxError
             << " sample_out=" << static_cast<int>(
                    static_cast<int8_t*>(outputBuffers[0].data)[0])
-            << " total_ms=" << totalMs
+            << " avg_ms=" << avgMs
             << " per_tile_ms=" << perTileMs
             << " bandwidth_GBps=" << bandwidthGBps << std::endl;
 

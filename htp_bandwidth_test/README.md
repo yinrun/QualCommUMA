@@ -4,7 +4,19 @@
 
 - **目标平台**: Snapdragon 8 Gen 5 (Hexagon V81 / SM8850)
 - **测试方法**: 两个 128MB 输入张量 (UFIXED_POINT_8) 逐元素相加，计算有效带宽 (2读 + 1写 = 3x data)
-- **测试结果**: **50+ GB/s** (BURST mode, SDK 2.42)
+- **测试结果**: **53.17 GB/s** (3次平均, BURST mode, SDK 2.42)
+
+## 测试结果
+
+| 指标 | 值 |
+|------|-----|
+| 峰值带宽 | **53.17 GB/s** (3次平均) |
+| 单次最高 | 54.89 GB/s |
+| 数据量 | 128 MB (4 tiles x 32MB) |
+| 有效传输 | 384 MB/次 (2读 + 1写) |
+| 每次延迟 | ~7.05 ms |
+| 旧版基线 | 6.42 GB/s |
+| 提升倍数 | **8.3x** |
 
 ## 关键优化点
 
@@ -18,7 +30,9 @@ dcvsConfig.dcvsV3Config.dcvsEnable = 0;
 // 不要在执行前调用 destroyPowerConfigId
 ```
 
-### 2. 使用 UFIXED_POINT_8 数据类型 (34.5 → 50+ GB/s, +45%)
+**根因**: `contextId=0` 导致 DCVS 配置未绑定到 power client，`destroyPowerConfigId` 立即销毁配置使其失效，HTP 以默认低功耗模式运行。
+
+### 2. 使用 UFIXED_POINT_8 数据类型 (34.5 → 53 GB/s, +45%)
 
 ```cpp
 // INT_8 会导致 HTP 插入隐式 Cast 节点，增加额外内存读写
@@ -28,6 +42,8 @@ tensor.v1.quantizeParams.encodingDefinition = QNN_DEFINITION_DEFINED;
 tensor.v1.quantizeParams.scaleOffsetEncoding.scale = 1.0f;
 tensor.v1.quantizeParams.scaleOffsetEncoding.offset = 0;
 ```
+
+**根因**: INT_8 不是 HTP 的原生量化类型，graph compiler 会自动插入 Cast 节点做类型转换，额外的读写开销拉低带宽。
 
 ## 目录结构
 
@@ -58,12 +74,17 @@ export QNN_SDK_ROOT=/path/to/qairt/2.42.0.251225
 [QNN] Using provider API 2.32.0
 [QNN] HTP num_cores=1
 [QNN] HTP num_hvx_threads=8
-[QNN] Done. max_error=0 sample_out=3 total_ms=7.48 per_tile_ms=1.87 bandwidth_GBps=50.11
+  run 1: 7.11 ms
+  run 2: 7.02 ms
+  run 3: 7.03 ms
+[QNN] Done. runs=3 max_error=0 sample_out=3 avg_ms=7.05 per_tile_ms=1.76 bandwidth_GBps=53.17
 ```
 
 ## 技术细节
 
 - 张量布局: NHWC `[32, 1, 1, C]`，4 tiles x 32MB = 128MB 总数据
+- 数据类型: `UFIXED_POINT_8` (scale=1.0, offset=0)，HTP 原生量化类型
 - 内存分配: `rpcmem_alloc` (heapid=25) + `QnnMem_register` (ION zero-copy)
-- 性能模式: DCVS 禁用, MAX 电压角, HMX MAX, sleep 禁用
+- 性能模式: DCVS 禁用, MAX 电压角 (bus+core), HMX V2 MAX, sleep 禁用
+- 测量方式: 3 次 warmup + 3 次计时取平均
 - 运算类型: `QNN_OP_ELEMENT_WISE_ADD`
