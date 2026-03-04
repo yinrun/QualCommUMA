@@ -6,7 +6,7 @@ if [[ -z "${QNN_SDK_ROOT:-}" ]]; then
   exit 1
 fi
 
-DEVICE_DIR="/data/local/tmp/qnn_htp_add"
+DEVICE_DIR="/data/local/tmp/htp_bandwidth_test"
 LIB_DIR="${DEVICE_DIR}/lib"
 HTP_DIR="${DEVICE_DIR}/htp"
 VENDOR_HTP_DIR="/vendor/lib/rfsa/adsp"
@@ -14,7 +14,7 @@ VENDOR_LIB64_DIR="/vendor/lib64"
 
 adb shell "mkdir -p ${LIB_DIR} ${HTP_DIR}"
 
-adb push build/android/qnn_htp_add_demo "${DEVICE_DIR}/"
+adb push build/android/htp_bandwidth_test "${DEVICE_DIR}/"
 
 # Always use SDK libs for consistent results
 adb push "${QNN_SDK_ROOT}/lib/aarch64-android/libQnnHtp.so" "${LIB_DIR}/"
@@ -31,8 +31,8 @@ adb push "${QNN_SDK_ROOT}/lib/hexagon-v81/unsigned/libQnnSystem.so" "${HTP_DIR}/
 adb push "${QNN_SDK_ROOT}/lib/hexagon-v81/unsigned/libQnnSaver.so" "${HTP_DIR}/"
 HTP_LIB_PATH="${HTP_DIR}"
 
-adb shell "chmod 755 ${DEVICE_DIR}/qnn_htp_add_demo"
+adb shell "chmod 755 ${DEVICE_DIR}/htp_bandwidth_test"
 
 adb shell "export LD_LIBRARY_PATH=${QNN_LIB_PATH}:\$LD_LIBRARY_PATH; \
   export ADSP_LIBRARY_PATH=${HTP_LIB_PATH}; \
-  ${DEVICE_DIR}/qnn_htp_add_demo"
+  ${DEVICE_DIR}/htp_bandwidth_test"
