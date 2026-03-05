@@ -6,6 +6,7 @@
 #include <thread>
 #include <random>
 #include <unistd.h>
+#include <sched.h>
 
 // ARM yield hint: lighter than sched_yield (no context switch), just a CPU hint
 #if defined(__aarch64__)
@@ -13,6 +14,15 @@ static inline void cpu_pause() { asm volatile("yield"); }
 #else
 static inline void cpu_pause() { }
 #endif
+
+// Pin current thread to a specific CPU core. Returns true on success.
+static bool pin_to_core(int core_id) {
+  if (core_id < 0) return false;
+  cpu_set_t mask;
+  CPU_ZERO(&mask);
+  CPU_SET(core_id, &mask);
+  return sched_setaffinity(0, sizeof(mask), &mask) == 0;
+}
 
 // ── Mode 1: Sequential Blocking ─────────────────────────────────────────────
 static PipelineResult run_sequential(int num_steps) {
@@ -45,7 +55,7 @@ static PipelineResult run_sequential(int num_steps) {
 }
 
 // ── Mode 2: Threaded + clFinish ──────────────────────────────────────────────
-static PipelineResult run_threaded_clfinish(int num_steps) {
+static PipelineResult run_threaded_clfinish(int num_steps, int npu_core) {
   PipelineResult result;
   result.steps.reserve(num_steps);
 
@@ -56,7 +66,8 @@ static PipelineResult run_threaded_clfinish(int num_steps) {
   npu_times.reserve(num_steps);
 
   // NPU worker thread
-  std::thread npu_thread([&]() {
+  std::thread npu_thread([&, npu_core]() {
+    pin_to_core(npu_core);
     while (running.load(std::memory_order_acquire)) {
       // Wait for signal to start (yield to reduce contention)
       while (!npu_start.load(std::memory_order_acquire)) {
@@ -112,7 +123,7 @@ static PipelineResult run_threaded_clfinish(int num_steps) {
 }
 
 // ── Mode 3: Event Poll (clFlush + cl_event polling, driver-level) ────────────
-static PipelineResult run_event_poll(int num_steps, int usleep_hint) {
+static PipelineResult run_event_poll(int num_steps, int usleep_hint, int npu_core) {
   PipelineResult result;
   result.steps.reserve(num_steps);
 
@@ -123,7 +134,8 @@ static PipelineResult run_event_poll(int num_steps, int usleep_hint) {
   npu_times.reserve(num_steps);
 
   // NPU worker thread (yield while waiting to reduce CPU contention)
-  std::thread npu_thread([&]() {
+  std::thread npu_thread([&, npu_core]() {
+    pin_to_core(npu_core);
     while (running.load(std::memory_order_acquire)) {
       while (!npu_start.load(std::memory_order_acquire)) {
         if (!running.load(std::memory_order_relaxed)) return;
@@ -190,7 +202,7 @@ static PipelineResult run_event_poll(int num_steps, int usleep_hint) {
 }
 
 // ── Mode 4: Fast Sync (paper Section 4.3: shared memory flag polling) ────────
-static PipelineResult run_fast_sync(int num_steps, int usleep_hint) {
+static PipelineResult run_fast_sync(int num_steps, int usleep_hint, int npu_core) {
   PipelineResult result;
   result.steps.reserve(num_steps);
 
@@ -207,7 +219,8 @@ static PipelineResult run_fast_sync(int num_steps, int usleep_hint) {
   npu_times.reserve(num_steps);
 
   // NPU worker thread
-  std::thread npu_thread([&]() {
+  std::thread npu_thread([&, npu_core]() {
+    pin_to_core(npu_core);
     while (running.load(std::memory_order_acquire)) {
       while (!npu_start.load(std::memory_order_acquire)) {
         if (!running.load(std::memory_order_relaxed)) return;
@@ -323,6 +336,14 @@ PipelineResult run_pipeline(const PipelineConfig& config, const char* kernel_pat
     }
   }
 
+  // Pin main thread if requested
+  if (config.main_core >= 0) {
+    if (pin_to_core(config.main_core))
+      printf("  Main thread pinned to core %d\n", config.main_core);
+    else
+      printf("  WARNING: Failed to pin main thread to core %d\n", config.main_core);
+  }
+
   // Warmup (sequential blocking for all modes, without flag)
   gpu_disable_flag();
   for (int i = 0; i < config.num_warmup; ++i) {
@@ -339,13 +360,13 @@ PipelineResult run_pipeline(const PipelineConfig& config, const char* kernel_pat
       result = run_sequential(config.num_steps);
       break;
     case SyncMode::THREADED_CLFINISH:
-      result = run_threaded_clfinish(config.num_steps);
+      result = run_threaded_clfinish(config.num_steps, config.npu_core);
       break;
     case SyncMode::EVENT_POLL:
-      result = run_event_poll(config.num_steps, config.usleep_hint);
+      result = run_event_poll(config.num_steps, config.usleep_hint, config.npu_core);
       break;
     case SyncMode::FAST_SYNC:
-      result = run_fast_sync(config.num_steps, config.usleep_hint);
+      result = run_fast_sync(config.num_steps, config.usleep_hint, config.npu_core);
       break;
   }
 

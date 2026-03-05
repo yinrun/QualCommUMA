@@ -72,6 +72,8 @@ struct PipelineConfig {
   int num_steps     = 100;
   int usleep_hint   = 0;  // microseconds, for fast sync NPU wait (0 = pure spin)
   SyncMode mode     = SyncMode::SEQUENTIAL_BLOCKING;
+  int main_core     = -1; // CPU core affinity for main thread (-1 = no pinning)
+  int npu_core      = -1; // CPU core affinity for NPU worker thread (-1 = no pinning)
 };
 
 // ── Timing ───────────────────────────────────────────────────────────────────

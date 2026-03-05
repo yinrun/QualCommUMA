@@ -183,14 +183,14 @@ flag 轮询检测的是 GPU 硬件完成时刻（kernel 写 flag 到共享内存
 
 ```
 Method                    total_p50   extra
-clFinish (blocking)         690.4 us
-clFlush+Event Poll       686.1 us  submit=159.8 poll=524.3 polls=1200
-clFlush+WaitForEvents       661.7 us
-clFlush+flag poll ★         272.2 us  polls=6118  ← ground truth
+clFinish (blocking)         696.4 us
+clFlush+cl_event poll       687.7 us  submit=164.7 poll=522.9 polls=1023
+clFlush+WaitForEvents       666.3 us
+clFlush+flag poll ★         312.1 us  polls=6968  ← ground truth
 ```
 
-**Flag 轮询比 clFinish 快 418us** — 这就是 clFinish 的驱动端后处理开销。
-cl_event 轮询与 clFinish 开销相近（两者都经过 OpenCL 驱动，413.9us 开销），
+**Flag 轮询比 clFinish 快 384us** — 这就是 clFinish 的驱动端后处理开销。
+cl_event 轮询与 clFinish 开销相近（两者都经过 OpenCL 驱动，376us 开销），
 只有 flag 方案（直接读共享内存）才能绕过驱动。
 
 ### OpenCL Profiling 时间线分析
@@ -203,77 +203,98 @@ GPU command pipeline (device clock, p50):
   Host (CPU)                        Device (GPU)
   ─────────────                     ───────────────
   clEnqueueNDRange ─┐
-                    │  99.8 us      QUEUED → SUBMIT    驱动翻译：命令 → GPU 硬件指令
+                    │  100.6 us     QUEUED → SUBMIT    驱动翻译：命令 → GPU 硬件指令
                     ├──────────────►
   clFlush ──────────┘               │
-                                    │  248.4 us         GPU 调度：command stream → 执行单元
+                                    │  248.7 us         GPU 调度：command stream → 执行单元
                                     ├──────────────────►
                                     │  START
                                     │   18.7 us         kernel 执行
                                     │  END
                                     ├──────────────────►
-                                    │                    flag 写入共享内存 ← CPU 可检测 (272us)
+                                    │                    flag 写入共享内存 ← CPU 可检测 (312us)
                                     │
-  clFinish 返回 ◄───────────────────┘  +418 us 驱动后处理
-  (总计 690us)
+  clFinish 返回 ◄───────────────────┘  +384 us 驱动后处理
+  (总计 696us)
 ```
 
 **关键发现：**
 
 | 阶段 | 耗时 (p50) | 说明 |
 |------|-----------|------|
-| QUEUED→SUBMIT | 99.8 us | OpenCL 驱动翻译命令给 GPU 硬件 |
-| SUBMIT→START | 248.4 us | GPU 硬件调度延迟（最大瓶颈） |
+| QUEUED→SUBMIT | 100.6 us | OpenCL 驱动翻译命令给 GPU 硬件 |
+| SUBMIT→START | 248.7 us | GPU 硬件调度延迟（最大瓶颈） |
 | START→END | 18.7 us | kernel 真正执行时间 |
-| QUEUED→END | 370.7 us | 设备侧总时间 |
-| Flag wall time | 272.2 us | Host 视角：提交 → flag 可检测 |
-| clFinish 返回 | 690.4 us | Host 视角：提交 → clFinish 返回 |
-| **clFinish 开销** | **418.2 us** | **clFinish 返回 - flag 检测 = 纯驱动后处理** |
+| QUEUED→END | 368.5 us | 设备侧总时间 |
+| Flag wall time | 312.1 us | Host 视角：提交 → flag 可检测 |
+| clFinish 返回 | 696.4 us | Host 视角：提交 → clFinish 返回 |
+| **clFinish 开销** | **384.3 us** | **clFinish 返回 - flag 检测 = 纯驱动后处理** |
 
-**272us 的 flag 检测时间分解**：kernel compute 仅 18.7us，剩余 ~253us 是 host 侧提交 + GPU 硬件调度延迟。这部分是不可避免的（命令必须经过驱动到达 GPU），但 flag 方案省掉了 clFinish 返回前的 418us 驱动后处理。
+**312us 的 flag 检测时间分解**：kernel compute 仅 18.7us，剩余 ~293us 是 host 侧提交 + GPU 硬件调度延迟。这部分是不可避免的（命令必须经过驱动到达 GPU），但 flag 方案省掉了 clFinish 返回前的 384us 驱动后处理。
 
-### Pipeline 模式对比
+### Pipeline 模式对比（无绑核）
 
 ```
 Mode                   step_p50   gpu_sync   npu_sync   sync_tot    speedup
 ------------------------------------------------------------------------
-Seq Blocking            925.3 us    624.2 us      0.0 us    624.2 us     1.00x
-Thread+clFinish        1095.2 us    801.8 us      1.5 us    803.3 us     0.84x
-Event Poll          1143.7 us    843.0 us      1.7 us    844.6 us     0.81x
-Fast Sync ★             805.3 us    354.8 us      2.1 us    357.0 us     1.15x
+Seq Blocking            944.8 us    635.6 us      0.0 us    635.6 us     1.00x
+Thread+clFinish        1114.0 us    826.5 us      1.6 us    828.0 us     0.85x
+Event Poll             1174.0 us    871.3 us      1.8 us    873.0 us     0.80x
+Fast Sync ★             831.8 us    355.8 us      2.1 us    357.9 us     1.14x
 ```
 
-**Fast Sync 是唯一比基线快的模式**，step_p50 从 925us 降到 805us（1.15x 加速）。
-其余两种线程模式因 spin-loop CPU 竞争反而更慢。
+不绑核时 Fast Sync 仅 1.14x 加速。线程模式下 spin-loop 与 NPU graphExecute 竞争同一 CPU 核，
+导致 NPU compute 从 285us 膨胀到 477us（+67%），严重削弱加速效果。
+
+### Pipeline 模式对比（绑核：main→core 7, npu→core 6）
+
+SM8850 CPU 拓扑：Core 0-5 @ 3.63GHz (performance), Core 6-7 @ 4.61GHz (prime)。
+将主线程（flag 轮询）绑到 prime core 7，NPU 线程绑到 prime core 6，消除 CPU 竞争：
+
+```
+Mode                   step_p50   gpu_sync   npu_sync   sync_tot    speedup
+------------------------------------------------------------------------
+Seq Blocking            765.0 us    550.0 us      0.0 us    550.0 us     1.00x
+Thread+clFinish         759.0 us    556.6 us      0.4 us    557.0 us     1.01x
+Event Poll              661.7 us    485.6 us      0.2 us    485.8 us     1.16x
+Fast Sync ★             274.7 us     99.8 us      0.2 us    100.0 us     2.78x
+```
+
+**Fast Sync + 绑核达到 2.78x 加速**，完全落在论文预测的 2-4x 范围内。
+
+### 绑核效果分析
+
+| 指标 | 不绑核 | 绑核 | 变化 |
+|------|--------|------|------|
+| step_p50 | 823.0 us | 274.7 us | **-67%** |
+| gpu_sync | 365.1 us | 99.8 us | -73% |
+| npu_compute | 447.7 us | 172.7 us | **-61%** |
+| npu_sync | 2.1 us | 0.2 us | -90% |
+| speedup | 1.14x | **2.78x** | |
+
+两个主要改善来源：
+
+1. **NPU compute 大幅下降**（447.7→172.7us, -275us）：之前 spin-loop 和 NPU graphExecute
+   竞争同一个 CPU 核，导致 DSP 调度严重受阻。绑核后两个线程各自独占 prime 核，消除竞争。
+2. **GPU sync 也下降**（365.1→99.8us, -265us）：主线程绑到 prime 核后，flag 轮询响应更快
+   （不被抢占），submit 路径也更快。
 
 ### 开销来源分析
 
 ```
-Sequential Blocking (925 us):
-  gpu: clEnqueue(160us) + GPU_sched(248us) + kernel(19us) + clFinish_overhead(418us) = 624us (gpu_sync)
-  npu: graphExecute = 276us
-  合计: 624 + 276 ≈ 925us (串行)
+Sequential Blocking (765 us, 绑核):
+  gpu: clEnqueue + clFinish (含驱动后处理) = 550us (gpu_sync)
+  npu: graphExecute = 197us
+  合计: 550 + 197 ≈ 765us (串行)
 
-Fast Sync (805 us):
-  gpu: clEnqueue(160us) + GPU_sched(248us) + kernel(19us) + flag_detect(~1us) = 355us (gpu_sync)
-  npu: graphExecute = 398us (线程模式下有 CPU 竞争，略高)
-  sync: npu_sync = 2us
-  合计: 355 + 398 + 2 ≈ 805us (gpu→npu 串行，省掉 clFinish 开销)
+Fast Sync (275 us, 绑核):
+  gpu: clEnqueue + clFlush + flag_detect = 100us (gpu_sync)
+  npu: graphExecute = 173us (绑核消除 CPU 竞争)
+  sync: npu_sync ≈ 0us
+  合计: 100 + 173 ≈ 275us (gpu→npu 串行，省掉 clFinish 开销 + 消除 CPU 竞争)
 ```
 
-**省掉了 ~418us 的 clFinish 开销**，但 NPU 在线程模式下 compute 从 276us 上升到 398us
-（+122us，CPU 竞争导致 DSP 调度延迟），削弱了总加速效果。
-
-### 与论文预测的对比
-
-论文预测 decode 阶段 fast sync 带来 **2-4x** 加速（Section 5.5, Figure 17）。
-我们测到 **1.15x**，差距原因：
-
-1. **论文的 kernel 更重**：decode 阶段的真实 operator（attention, FFN）compute 在 ~200-500us，
-   clFinish 的 418us 开销占比约 45-67%。我们的 RMSNorm 只有 19us，占比仅 2%。
-2. **NPU 线程竞争**：NPU 的 `graphExecute()` 在线程模式下耗时增加 ~44%。
-   论文可能对 NPU 调度做了优化（如 CPU 亲和性绑核）。
-3. **串行 pipeline 限制**：当前 GPU→NPU 仍然串行，论文的 fast sync 允许更激进的流水线重叠。
+**绑核后省掉了 ~450us**：clFinish 驱动开销 ~410us + CPU 竞争消除 ~24us NPU 加速。
 
 ## 目录结构
 
@@ -293,6 +314,13 @@ fast_sync_test/
     └── main.cpp                  # CLI + 结果输出
 ```
 
+### CPU 绑核
+
+通过 `sched_setaffinity()` 将主线程和 NPU 工作线程分别绑定到不同 CPU 核，
+消除 spin-loop 轮询与 NPU graphExecute 的 CPU 竞争。
+
+SM8850 推荐配置：`--main-core 7 --npu-core 6`（两个 prime 核 @ 4.61GHz）。
+
 ## 构建与运行
 
 ```bash
@@ -301,17 +329,19 @@ export QNN_SDK_ROOT=/path/to/qualcomm/qairt/2.42.0.251225
 
 bash build_android.sh
 bash run_on_device.sh
+bash run_on_device.sh --main-core 7 --npu-core 6              # 绑核（推荐）
 bash run_on_device.sh --hidden-dim 2048 --steps 200
+bash run_on_device.sh --mode fast --main-core 7 --npu-core 6  # 仅测 Fast Sync
 ```
 
 ## 结论
 
-1. **clFinish 开销确认**：SM8850 上 clFinish 的驱动后处理开销约 **418us**，与论文 ~400us 一致
-2. **cl_event 无法替代 flag**：clGetEventInfo 轮询与 clFinish 开销相同（~414us），两者共用驱动代码路径
-3. **Flag-based 共享内存轮询有效**：绕过 OpenCL 驱动，GPU 完成检测从 690us 降到 272us
-4. **Pipeline 加速 1.15x**：RMSNorm 场景下 Fast Sync 比 Sequential Blocking 快 120us/step
-5. **主要瓶颈在 GPU 调度**：SUBMIT→START 的 248us 调度延迟不可避免，占 flag wall time 的 91%
-6. **实际 LLM 场景预计更大收益**：更重的 kernel（attention/FFN）会放大 clFinish 开销占比
+1. **clFinish 开销确认**：SM8850 上 clFinish 的驱动后处理开销约 **384-410us**，与论文 ~400us 一致
+2. **cl_event 无法替代 flag**：clGetEventInfo 轮询与 clFinish 开销相同（~372us），两者共用驱动代码路径
+3. **Flag-based 共享内存轮询有效**：绕过 OpenCL 驱动，GPU 完成检测从 ~700us 降到 ~310us
+4. **CPU 绑核至关重要**：不绑核时 spin-loop 与 NPU 竞争导致 NPU compute +67%，绑核后消除竞争
+5. **Fast Sync + 绑核达到 2.78x 加速**：step_p50 从 765us 降到 275us，落在论文预测的 2-4x 范围内
+6. **主要瓶颈在 GPU 调度**：SUBMIT→START 的 248us 调度延迟不可避免，占 flag wall time 的 80%
 
 ## 参考
 

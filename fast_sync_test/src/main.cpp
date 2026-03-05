@@ -14,6 +14,8 @@ static void print_usage(const char* prog) {
   printf("  --warmup N       warmup iterations (default: 10)\n");
   printf("  --usleep-hint N  NPU wait hint in us (default: 0 = pure spin)\n");
   printf("  --mode MODE      seq|threaded|event|fast|all (default: all)\n");
+  printf("  --main-core N    pin main thread to CPU core N (default: -1 = no pin)\n");
+  printf("  --npu-core N     pin NPU worker thread to CPU core N (default: -1 = no pin)\n");
 }
 
 static void print_stats_row(const char* label, Stats& s) {
@@ -65,6 +67,8 @@ int main(int argc, char* argv[]) {
   int steps       = 100;
   int warmup      = 10;
   int usleep_hint = 0;
+  int main_core   = -1;
+  int npu_core    = -1;
   bool run_seq = true, run_threaded = true, run_event = true, run_fast = true;
 
   for (int i = 1; i < argc; ++i) {
@@ -72,6 +76,8 @@ int main(int argc, char* argv[]) {
     else if (!strcmp(argv[i], "--steps") && i+1 < argc) steps = atoi(argv[++i]);
     else if (!strcmp(argv[i], "--warmup") && i+1 < argc) warmup = atoi(argv[++i]);
     else if (!strcmp(argv[i], "--usleep-hint") && i+1 < argc) usleep_hint = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "--main-core") && i+1 < argc) main_core = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "--npu-core") && i+1 < argc) npu_core = atoi(argv[++i]);
     else if (!strcmp(argv[i], "--mode") && i+1 < argc) {
       ++i;
       run_seq = run_threaded = run_event = run_fast = false;
@@ -89,6 +95,8 @@ int main(int argc, char* argv[]) {
   printf("Config: hidden=%d, batch=1, FP16, steps=%d, warmup=%d\n", hidden_dim, steps, warmup);
   if (usleep_hint > 0)
     printf("NPU usleep hint: %d us\n", usleep_hint);
+  if (main_core >= 0 || npu_core >= 0)
+    printf("CPU affinity: main_core=%d, npu_core=%d\n", main_core, npu_core);
   printf("\n");
 
   // Print device info
@@ -134,6 +142,8 @@ int main(int argc, char* argv[]) {
     cfg.num_warmup  = warmup;
     cfg.num_steps   = steps;
     cfg.usleep_hint = usleep_hint;
+    cfg.main_core   = main_core;
+    cfg.npu_core    = npu_core;
     cfg.mode        = modes[m];
 
     printf("Running %s...\n", names[m]);
