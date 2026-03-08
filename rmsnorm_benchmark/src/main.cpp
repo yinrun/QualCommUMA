@@ -40,7 +40,7 @@ int main(int argc, char* argv[]) {
     else if (!strcmp(argv[i], "--help")) { print_usage(argv[0]); return 0; }
   }
 
-  printf("=== RMSNorm Benchmark: GPU (FP16) vs NPU (FP16) ===\n");
+  printf("=== RMSNorm Benchmark: GPU vs NPU vs NPU-Cached ===\n");
   printf("平台: SM8850, Adreno 840 + Hexagon V81\n");
   printf("理论峰值带宽: %.1f GB/s (LPDDR5X-5300)\n\n", kTheoreticalBandwidthGBps);
 
@@ -74,29 +74,43 @@ int main(int argc, char* argv[]) {
     cases.push_back({1024, 4096, "prefill-1k"});
   }
 
-  // Benchmark: GPU FP16 RmsNorm vs NPU FP16 RmsNorm
-  printf("--- GPU RMSNorm (FP16) vs NPU RMSNorm (FP16) ---\n\n");
-
-  printf("%-12s %5s %6s | %9s %9s | %9s %9s | %7s\n",
+  // Header
+  printf("--- GPU RMSNorm (FP16) vs NPU Dynamic vs NPU Cached ---\n\n");
+  printf("%-12s %5s %6s | %9s %9s | %9s %9s | %9s %9s | %7s %7s\n",
          "场景", "batch", "hidden",
-         "GPU(us)", "GPU(GB/s)", "NPU(us)", "NPU(GB/s)", "GPU/NPU");
-  for (int i = 0; i < 82; ++i) printf("-");
+         "GPU(us)", "GPU(GB/s)",
+         "NPU(us)", "NPU(GB/s)",
+         "Cache(us)", "Cac(GB/s)",
+         "GPU/NPU", "GPU/Cac");
+  for (int i = 0; i < 115; ++i) printf("-");
   printf("\n");
 
   for (auto& tc : cases) {
     RMSNormConfig cfg = {tc.batch, tc.hidden, 1e-6f};
     int iters = user_iters > 0 ? user_iters : auto_iters(tc.batch, tc.hidden, 20.0);
 
+    // GPU
     RMSNormResult gpu = {};
     if (gpu_rmsnorm_init(cfg, "kernels/rmsnorm.cl"))
       gpu = gpu_rmsnorm_run(cfg, warmup, iters);
     gpu_rmsnorm_cleanup();
 
+    // NPU dynamic
     RMSNormResult npu = {};
     if (npu_rmsnorm_init(cfg, NpuMode::NATIVE))
       npu = npu_rmsnorm_run(cfg, warmup, iters);
     npu_rmsnorm_cleanup();
 
+    // NPU cached
+    RMSNormResult npu_cached = {};
+    double cache_load_us = 0;
+    if (npu_rmsnorm_init_cached(cfg, NpuMode::NATIVE, cache_load_us)) {
+      printf("[NPU] Cache load: %.1f us\n", cache_load_us);
+      npu_cached = npu_rmsnorm_run(cfg, warmup, iters);
+    }
+    npu_rmsnorm_cleanup();
+
+    // Print row
     printf("%-12s %5d %6d", tc.label, tc.batch, tc.hidden);
 
     if (gpu.success) printf(" | %9.1f %9.2f", gpu.latency_us, gpu.bandwidth_gbps);
@@ -105,16 +119,25 @@ int main(int argc, char* argv[]) {
     if (npu.success) printf(" | %9.1f %9.2f", npu.latency_us, npu.bandwidth_gbps);
     else             printf(" | %9s %9s", "FAIL", "-");
 
+    if (npu_cached.success) printf(" | %9.1f %9.2f", npu_cached.latency_us, npu_cached.bandwidth_gbps);
+    else                    printf(" | %9s %9s", "FAIL", "-");
+
     if (gpu.success && npu.success)
       printf(" | %5.1fx", npu.latency_us / gpu.latency_us);
     else
       printf(" | %7s", "-");
 
+    if (gpu.success && npu_cached.success)
+      printf(" %5.1fx", npu_cached.latency_us / gpu.latency_us);
+    else
+      printf(" %7s", "-");
+
     printf("\n");
   }
 
   printf("\n--- 结论 ---\n");
-  printf("GPU/NPU: GPU 相对 NPU FP16 RMSNorm 的加速比 (同精度苹果对苹果比较)\n");
+  printf("GPU/NPU: NPU dynamic 延迟 / GPU 延迟 (含 FastRPC launch 开销)\n");
+  printf("GPU/Cac: NPU cached 延迟 / GPU 延迟 (context binary 反序列化, 消除 launch 开销)\n");
 
   return 0;
 }

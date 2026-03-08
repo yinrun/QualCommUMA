@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-export ANDROID_NDK="${ANDROID_NDK:-/home/yinrun/Android/Sdk/android-ndk-r25c}"
-export QNN_SDK_ROOT="${QNN_SDK_ROOT:-/home/yinrun/software/qualcomm/qairt/2.42.0.251225}"
+export ANDROID_NDK="${ANDROID_NDK:-/Users/yinrun/Library/Android/sdk/ndk/29.0.13113456}"
+export QNN_SDK_ROOT="${QNN_SDK_ROOT:-/Users/yinrun/Workspace/qairt/2.42.0.251225}"
 
 DEVICE_DIR="/data/local/tmp/rmsnorm_benchmark"
 LIB_DIR="${DEVICE_DIR}/lib"

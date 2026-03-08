@@ -552,6 +552,66 @@ bool npu_rmsnorm_read_output(void* dst, size_t bytes) {
   return true;
 }
 
+bool npu_rmsnorm_init_cached(const RMSNormConfig& config, NpuMode mode, double& out_cache_load_us) {
+  // Step 1: Normal init (builds graph dynamically)
+  if (!npu_rmsnorm_init(config, mode)) return false;
+
+  // Save tensor IDs assigned by tensorCreateGraphTensor — needed after deserialization
+  uint32_t input_id  = g_execInputs[0].v1.id;
+  uint32_t output_id = g_execOutputs[0].v1.id;
+
+  // Step 2: Serialize context to binary
+  Qnn_ContextBinarySize_t binSize = 0;
+  if (!check(g_qnn->contextGetBinarySize(g_context, &binSize), "contextGetBinarySize"))
+    return false;
+  std::vector<uint8_t> binary(binSize);
+  Qnn_ContextBinarySize_t written = 0;
+  if (!check(g_qnn->contextGetBinary(g_context, binary.data(), binSize, &written),
+             "contextGetBinary"))
+    return false;
+  binary.resize(written);
+  printf("[NPU] Context binary: %.1f KB\n", written / 1024.0);
+
+  // Step 3: Deregister ION from old context, free context
+  deregisterAll();
+  g_qnn->contextFree(g_context, nullptr);
+  g_context = nullptr;
+  g_graph = nullptr;
+
+  // Step 4: Create context from binary (timed)
+  double t0 = now_seconds();
+  if (!check(g_qnn->contextCreateFromBinary(g_backend, g_device, nullptr,
+                                              binary.data(), binary.size(),
+                                              &g_context, nullptr),
+             "contextCreateFromBinary"))
+    return false;
+
+  // Step 5: Retrieve graph
+  if (!check(g_qnn->graphRetrieve(g_context, "rmsnorm_graph", &g_graph), "graphRetrieve"))
+    return false;
+
+  // Step 6: Re-register ION buffers on new context
+  if (!registerBuffer(g_ionInput,  g_dimsIO, kTensorRank, QNN_DATATYPE_FLOAT_16, g_regInput) ||
+      !registerBuffer(g_ionOutput, g_dimsIO, kTensorRank, QNN_DATATYPE_FLOAT_16, g_regOutput))
+    return false;
+
+  double t1 = now_seconds();
+  out_cache_load_us = (t1 - t0) * 1e6;
+
+  // Step 7: Re-bind ION handles for execution, using saved tensor IDs
+  g_execInputs[0] = makeFp16Tensor("input", QNN_TENSOR_TYPE_APP_WRITE, g_dimsIO);
+  g_execInputs[0].v1.id       = input_id;
+  g_execInputs[0].v1.memType   = QNN_TENSORMEMTYPE_MEMHANDLE;
+  g_execInputs[0].v1.memHandle = g_regInput.handle;
+
+  g_execOutputs[0] = makeFp16Tensor("output", QNN_TENSOR_TYPE_APP_READ, g_dimsIO);
+  g_execOutputs[0].v1.id       = output_id;
+  g_execOutputs[0].v1.memType   = QNN_TENSORMEMTYPE_MEMHANDLE;
+  g_execOutputs[0].v1.memHandle = g_regOutput.handle;
+
+  return true;
+}
+
 void npu_rmsnorm_cleanup() {
   deregisterAll();
   if (g_qnn && g_context) g_qnn->contextFree(g_context, nullptr);
