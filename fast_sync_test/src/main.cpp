@@ -13,7 +13,7 @@ static void print_usage(const char* prog) {
   printf("  --steps N        measured iterations (default: 100)\n");
   printf("  --warmup N       warmup iterations (default: 10)\n");
   printf("  --usleep-hint N  NPU wait hint in us (default: 0 = pure spin)\n");
-  printf("  --mode MODE      seq|threaded|event|fast|all (default: all)\n");
+  printf("  --mode MODE      seq|threaded|event|fast|direct|all (default: all)\n");
   printf("  --main-core N    pin main thread to CPU core N (default: -1 = no pin)\n");
   printf("  --npu-core N     pin NPU worker thread to CPU core N (default: -1 = no pin)\n");
 }
@@ -69,7 +69,7 @@ int main(int argc, char* argv[]) {
   int usleep_hint = 0;
   int main_core   = -1;
   int npu_core    = -1;
-  bool run_seq = true, run_threaded = true, run_event = true, run_fast = true;
+  bool run_seq = true, run_threaded = true, run_event = true, run_fast = true, run_direct = true;
 
   for (int i = 1; i < argc; ++i) {
     if (!strcmp(argv[i], "--hidden-dim") && i+1 < argc) hidden_dim = atoi(argv[++i]);
@@ -80,12 +80,13 @@ int main(int argc, char* argv[]) {
     else if (!strcmp(argv[i], "--npu-core") && i+1 < argc) npu_core = atoi(argv[++i]);
     else if (!strcmp(argv[i], "--mode") && i+1 < argc) {
       ++i;
-      run_seq = run_threaded = run_event = run_fast = false;
+      run_seq = run_threaded = run_event = run_fast = run_direct = false;
       if (!strcmp(argv[i], "seq")) run_seq = true;
       else if (!strcmp(argv[i], "threaded")) run_threaded = true;
       else if (!strcmp(argv[i], "event")) run_event = true;
       else if (!strcmp(argv[i], "fast")) run_fast = true;
-      else { run_seq = run_threaded = run_event = run_fast = true; }
+      else if (!strcmp(argv[i], "direct")) run_direct = true;
+      else { run_seq = run_threaded = run_event = run_fast = run_direct = true; }
     }
     else if (!strcmp(argv[i], "--help")) { print_usage(argv[0]); return 0; }
   }
@@ -129,11 +130,11 @@ int main(int argc, char* argv[]) {
   std::vector<ModeResult> results;
 
   // Run each mode
-  SyncMode modes[] = {SyncMode::SEQUENTIAL_BLOCKING, SyncMode::THREADED_CLFINISH, SyncMode::EVENT_POLL, SyncMode::FAST_SYNC};
-  bool     run_flags[] = {run_seq, run_threaded, run_event, run_fast};
-  const char* names[] = {"Seq Blocking", "Thread+clFinish", "Event Poll", "Fast Sync"};
+  SyncMode modes[] = {SyncMode::SEQUENTIAL_BLOCKING, SyncMode::THREADED_CLFINISH, SyncMode::EVENT_POLL, SyncMode::FAST_SYNC, SyncMode::FAST_SYNC_DIRECT};
+  bool     run_flags[] = {run_seq, run_threaded, run_event, run_fast, run_direct};
+  const char* names[] = {"Seq Blocking", "Thread+clFinish", "Event Poll", "Fast Sync", "Fast Sync Direct"};
 
-  for (int m = 0; m < 4; ++m) {
+  for (int m = 0; m < 5; ++m) {
     if (!run_flags[m]) continue;
 
     PipelineConfig cfg;
