@@ -368,6 +368,87 @@ static PipelineResult run_fast_sync_direct(int num_steps, int usleep_hint, int n
   return result;
 }
 
+// ── Mode 6: Parallel Sync (GPU+NPU parallel launch, DSP polls GPU flag) ─────
+// Requires: npu_init_with_sync() already called (graph has SyncWait custom op).
+// Timeline:
+//   t=0:  GPU submit (clFlush) + signal NPU to start graphExecute in parallel
+//   t~80: DSP starts executing SyncWait, polls GPU flag with dcinva
+//   t~120: GPU flag set → DSP spin-poll detects it
+//   t~141: DSP done → graphExecute returns
+//   Total: ~graphExecute wall time (NPU RPC launch overlaps GPU execution)
+static PipelineResult run_parallel_sync(int num_steps, int npu_core) {
+  PipelineResult result;
+  result.steps.reserve(num_steps);
+
+  volatile uint32_t* flag_ptr = gpu_get_flag_ptr();
+  if (!flag_ptr) {
+    result.error = "GPU flag not enabled (parallel sync requires flag)";
+    return result;
+  }
+
+  std::atomic<uint32_t> gpu_submitted{0};  // main → NPU: GPU submitted, start graphExecute
+  std::atomic<uint32_t> npu_done{0};       // NPU → main: graphExecute returned
+  std::atomic<bool> running{true};
+  std::vector<double> npu_exec_times;
+  npu_exec_times.reserve(num_steps);
+
+  // NPU thread starts graphExecute immediately after GPU submit.
+  // DSP SyncWait op handles GPU synchronization internally via flag polling.
+  std::thread npu_thread([&, npu_core]() {
+    pin_to_core(npu_core);
+    while (running.load(std::memory_order_acquire)) {
+      while (!gpu_submitted.load(std::memory_order_acquire)) {
+        if (!running.load(std::memory_order_relaxed)) return;
+        cpu_pause();
+      }
+      gpu_submitted.store(0, std::memory_order_relaxed);
+
+      double exec_us = npu_execute_blocking();
+      npu_exec_times.push_back(exec_us);
+
+      npu_done.store(1, std::memory_order_release);
+    }
+  });
+
+  double total_t0 = now_us();
+  for (int i = 0; i < num_steps; ++i) {
+    StepTiming st = {};
+    double step_t0 = now_us();
+
+    // GPU: submit (clEnqueue + clFlush, flag auto-reset to 0)
+    gpu_submit();
+
+    // Signal NPU thread to launch graphExecute in parallel with GPU execution.
+    // DSP SyncWait op will spin-poll the flag until GPU writes 1.
+    gpu_submitted.store(1, std::memory_order_release);
+
+    // Wait for NPU completion (graphExecute returns after DSP detects GPU flag)
+    double npu_wait_t0 = now_us();
+    while (!npu_done.load(std::memory_order_acquire))
+      cpu_pause();
+    npu_done.store(0, std::memory_order_relaxed);
+    double npu_wait_t1 = now_us();
+
+    st.gpu_compute_us = 0;  // GPU sync absorbed into NPU graphExecute (DSP polls internally)
+    st.gpu_sync_us = 0;
+    st.npu_compute_us = npu_exec_times.back();
+    st.npu_sync_us = (npu_wait_t1 - npu_wait_t0) - st.npu_compute_us;
+    if (st.npu_sync_us < 0) st.npu_sync_us = 0;
+
+    st.step_total_us = now_us() - step_t0;
+    result.steps.push_back(st);
+  }
+  result.total_us = now_us() - total_t0;
+
+  running.store(false, std::memory_order_release);
+  gpu_submitted.store(1, std::memory_order_release);
+  npu_thread.join();
+
+  result.num_steps = num_steps;
+  result.success = true;
+  return result;
+}
+
 // ── Public API ───────────────────────────────────────────────────────────────
 PipelineResult run_pipeline(const PipelineConfig& config, const char* kernel_path) {
   PipelineResult result;
@@ -396,29 +477,38 @@ PipelineResult run_pipeline(const PipelineConfig& config, const char* kernel_pat
     return result;
   }
 
-  // Init NPU: reads buf1, writes buf0
-  if (!npu_init(hidden, config.epsilon, ion_buf1, ion_buf0)) {
-    result.error = "NPU init failed";
-    gpu_cleanup(); freeIonBuffer(ion_buf0); freeIonBuffer(ion_buf1);
-    return result;
-  }
-
-  // Allocate flag buffer for FAST_SYNC / FAST_SYNC_DIRECT modes
+  // Allocate flag buffer for modes that need GPU shared-memory flag
   IonBuffer ion_flag = {};
-  bool need_flag = (config.mode == SyncMode::FAST_SYNC || config.mode == SyncMode::FAST_SYNC_DIRECT);
+  bool need_flag = (config.mode == SyncMode::FAST_SYNC ||
+                    config.mode == SyncMode::FAST_SYNC_DIRECT ||
+                    config.mode == SyncMode::PARALLEL_SYNC);
   if (need_flag) {
     if (!allocIonBuffer(sizeof(uint32_t), 0, ion_flag)) {
       result.error = "ION flag alloc failed";
-      npu_cleanup(); gpu_cleanup();
+      gpu_cleanup();
       freeIonBuffer(ion_buf0); freeIonBuffer(ion_buf1);
       return result;
     }
     if (!gpu_enable_flag(ion_flag)) {
       result.error = "GPU flag enable failed";
-      npu_cleanup(); gpu_cleanup();
+      gpu_cleanup();
       freeIonBuffer(ion_buf0); freeIonBuffer(ion_buf1); freeIonBuffer(ion_flag);
       return result;
     }
+  }
+
+  // Init NPU: reads buf1, writes buf0
+  bool npu_ok = false;
+  if (config.mode == SyncMode::PARALLEL_SYNC) {
+    // Sync graph: SyncWait + RmsNorm, requires GPU flag ION buffer
+    npu_ok = npu_init_with_sync(hidden, config.epsilon, ion_buf1, ion_buf0, ion_flag);
+  } else {
+    npu_ok = npu_init(hidden, config.epsilon, ion_buf1, ion_buf0);
+  }
+  if (!npu_ok) {
+    result.error = "NPU init failed";
+    gpu_cleanup(); freeIonBuffer(ion_buf0); freeIonBuffer(ion_buf1); freeIonBuffer(ion_flag);
+    return result;
   }
 
   // Pin main thread if requested
@@ -429,15 +519,26 @@ PipelineResult run_pipeline(const PipelineConfig& config, const char* kernel_pat
       printf("  WARNING: Failed to pin main thread to core %d\n", config.main_core);
   }
 
-  // Warmup (sequential blocking for all modes, without flag)
-  gpu_disable_flag();
-  for (int i = 0; i < config.num_warmup; ++i) {
-    gpu_execute_blocking(nullptr);
-    npu_execute_blocking();
+  // Warmup (sequential blocking)
+  if (config.mode == SyncMode::PARALLEL_SYNC) {
+    // PARALLEL_SYNC: NPU graph has SyncWait op that polls GPU flag.
+    // Warmup sequentially: GPU submit → flag set → NPU executes.
+    for (int i = 0; i < config.num_warmup; ++i) {
+      gpu_submit();
+      volatile uint32_t* fp = gpu_get_flag_ptr();
+      while (*fp == 0) cpu_pause();
+      npu_execute_blocking();
+    }
+  } else {
+    // Other modes: warmup without flag (plain clFinish + graphExecute)
+    gpu_disable_flag();
+    for (int i = 0; i < config.num_warmup; ++i) {
+      gpu_execute_blocking(nullptr);
+      npu_execute_blocking();
+    }
+    if (need_flag)
+      gpu_enable_flag(ion_flag);
   }
-  // Re-enable flag for FAST_SYNC / FAST_SYNC_DIRECT
-  if (need_flag)
-    gpu_enable_flag(ion_flag);
 
   // Run pipeline
   switch (config.mode) {
@@ -455,6 +556,9 @@ PipelineResult run_pipeline(const PipelineConfig& config, const char* kernel_pat
       break;
     case SyncMode::FAST_SYNC_DIRECT:
       result = run_fast_sync_direct(config.num_steps, config.usleep_hint, config.npu_core);
+      break;
+    case SyncMode::PARALLEL_SYNC:
+      result = run_parallel_sync(config.num_steps, config.npu_core);
       break;
   }
 

@@ -28,3 +28,14 @@ target_include_directories(fast_sync_test PRIVATE
 
 target_link_directories(fast_sync_test PRIVATE "${OPENCL_LIB_DIR}")
 target_link_libraries(fast_sync_test PRIVATE OpenCL dl)
+
+# Unit test: QNN graph overhead analysis (no OpenCL dependency)
+add_executable(test_graph_overhead
+  src/test_graph_overhead.cpp
+)
+target_include_directories(test_graph_overhead PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/src"
+  "${QNN_SDK_ROOT}/include"
+  "${QNN_SDK_ROOT}/include/QNN"
+)
+target_link_libraries(test_graph_overhead PRIVATE dl)

@@ -1,2 +1,17 @@
 build
 .DS_Store
+.vscode/
+*.pdf
+
+# SDK/toolchain/MLIR copies (too large for git)
+rmsnorm/HEXAGON_SDK/
+rmsnorm/HEXAGON_TOOLS/
+rmsnorm/HEXKL_DIR/
+rmsnorm/HOST_TOOLCHAIN/
+rmsnorm/LLVM_DIR/
+rmsnorm/hexagon-mlir/
+
+# HTP op package build artifacts
+fast_sync_test/heteroedge_op/build/
+fast_sync_test/custom_op/build/
+rmsnorm/custom_op/build/

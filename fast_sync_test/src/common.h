@@ -16,7 +16,8 @@ enum class SyncMode {
   THREADED_CLFINISH,     // NPU in thread, clFinish for GPU, flag for NPU
   EVENT_POLL,            // clFlush + cl_event poll for GPU (driver-level, not paper's approach)
   FAST_SYNC,             // clFlush + shared memory flag poll (paper Section 4.3)
-  FAST_SYNC_DIRECT       // NPU thread directly polls flag, main thread freed
+  FAST_SYNC_DIRECT,      // NPU thread directly polls flag, main thread freed
+  PARALLEL_SYNC          // GPU+NPU parallel launch; DSP polls GPU flag via SyncWait custom op
 };
 
 inline const char* sync_mode_name(SyncMode m) {
@@ -26,6 +27,7 @@ inline const char* sync_mode_name(SyncMode m) {
     case SyncMode::EVENT_POLL:          return "Event Poll";
     case SyncMode::FAST_SYNC:           return "Fast Sync";
     case SyncMode::FAST_SYNC_DIRECT:    return "Fast Sync Direct";
+    case SyncMode::PARALLEL_SYNC:       return "Parallel Sync";
   }
   return "Unknown";
 }

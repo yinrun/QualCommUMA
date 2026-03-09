@@ -179,7 +179,39 @@ pf-1k         1024  4096 |  30840.0     0.54 2.029657e-03 |  12567.8     1.34 2.
 
 4. **优化方向**: 为 custom op 添加 `AUTOSPLIT` 规则可在 batch 维度自动切分，预期能追平 Native 性能。
 
-## 6. 结论
+## 6. Triton RMSNorm via Hexagon-MLIR (第三种方案)
+
+使用 [hexagon-mlir](https://github.com/qualcomm/hexagon-mlir)（Triton backend for Hexagon）实现第三版 RMSNorm，以 Triton DSL 编写 kernel，由编译器自动生成 HVX 指令。
+
+### 6.1 方案特点
+
+- **~30 行 Python kernel**，无需手写 HVX intrinsics
+- 编译器自动处理 VTCM tiling、DMA 搬运、多线程分发
+- 与 GPU Triton kernel 语法一致，具备跨平台可移植性
+- 支持通过编译器选项组合调优性能
+
+### 6.2 三种 HTP 方案对比
+
+| 维度 | QNN Native | Custom HVX | Triton (hexagon-mlir) |
+|------|-----------|------------|----------------------|
+| 代码量 | ~50 行 API 调用 | ~500 行 C++ | ~80 行 Python |
+| 开发难度 | 低 | 高 | 中 |
+| 多线程 | 自动 | 需手写规则 | 编译器选项 |
+| 迭代速度 | 快 | 慢 | 快 |
+
+### 6.3 性能对比
+
+> 待 hexagon-mlir 工具链构建完成后填入实测数据。详见 `triton_rmsnorm/README.md`。
+
+### 6.4 使用方式
+
+```bash
+cd triton_rmsnorm
+source setup_env.sh          # 首次构建工具链
+pytest -sv rmsnorm_kernel.py  # 运行 benchmark
+```
+
+## 7. 结论
 
 **RMSNorm 更适合在 GPU 上执行**，这一结论从算子层面得到了实证验证：
 
@@ -191,7 +223,7 @@ pf-1k         1024  4096 |  30840.0     0.54 2.029657e-03 |  12567.8     1.34 2.
 
 对于异构 LLM 推理，建议将 RMSNorm/LayerNorm 等归一化算子调度到 GPU，将量化 Attention/FFN 的矩阵乘法调度到 NPU。
 
-## 7. 项目结构
+## 8. 项目结构
 
 ```
 rmsnorm/
@@ -212,10 +244,14 @@ rmsnorm/
 │       ├── CMakeLists.txt      # 测试程序构建配置
 │       ├── build_test.sh       # 编译测试程序
 │       └── run_on_device.sh    # 部署并运行测试
+├── triton_rmsnorm/
+│   ├── rmsnorm_kernel.py       # Triton RMSNorm kernel + benchmark
+│   ├── setup_env.sh            # hexagon-mlir 环境配置
+│   └── README.md               # Triton 方案说明
 └── README.md                   # 本文档
 ```
 
-## 8. 构建与运行
+## 9. 构建与运行
 
 ```bash
 # GPU + NPU benchmark
@@ -227,6 +263,9 @@ cd custom_op && bash build.sh
 
 # Custom vs Native benchmark
 cd custom_op/test && bash build_test.sh && bash run_on_device.sh
+
+# Triton RMSNorm (hexagon-mlir)
+cd triton_rmsnorm && source setup_env.sh && pytest -sv rmsnorm_kernel.py
 ```
 
 依赖：

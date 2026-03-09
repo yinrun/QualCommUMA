@@ -2,14 +2,14 @@
 set -euo pipefail
 export QNN_SDK_ROOT="${QNN_SDK_ROOT:-/home/yinrun/software/qualcomm/qairt/2.42.0.251225}"
 
-DEVICE_DIR="/data/local/tmp/fast_sync_test"
+DEVICE_DIR="/data/local/tmp/sync_op_test"
 LIB_DIR="${DEVICE_DIR}/lib"
 HTP_DIR="${DEVICE_DIR}/htp"
 
-adb shell "mkdir -p ${DEVICE_DIR}/kernels ${LIB_DIR} ${HTP_DIR}"
+adb shell "mkdir -p ${LIB_DIR} ${HTP_DIR}"
 
-adb push build/android/fast_sync_test "${DEVICE_DIR}/"
-adb push kernels/rmsnorm.cl "${DEVICE_DIR}/kernels/"
+# Push test binary
+adb push build/android/sync_op_test "${DEVICE_DIR}/"
 
 # QNN runtime libraries
 adb push "${QNN_SDK_ROOT}/lib/aarch64-android/libQnnHtp.so" "${LIB_DIR}/"
@@ -25,28 +25,19 @@ adb push "${QNN_SDK_ROOT}/lib/hexagon-v81/unsigned/libCalculator_skel.so" "${HTP
 adb push "${QNN_SDK_ROOT}/lib/hexagon-v81/unsigned/libQnnSystem.so" "${HTP_DIR}/"
 adb push "${QNN_SDK_ROOT}/lib/hexagon-v81/unsigned/libQnnSaver.so" "${HTP_DIR}/"
 
-# Combined HeteroEdge op package (SyncWait + RmsNorm, for --mode parallel)
-HETEROEDGE_DIR="heteroedge_op/build"
+# HeteroEdge op package (SyncWait + RmsNorm)
+HETEROEDGE_DIR="../fast_sync_test/heteroedge_op/build"
 if [ -d "${HETEROEDGE_DIR}" ]; then
   adb push "${HETEROEDGE_DIR}/aarch64-android/libQnnHtpHeteroEdgeOpPackage.so" "${DEVICE_DIR}/"
   adb push "${HETEROEDGE_DIR}/hexagon-v81/libQnnHtpHeteroEdgeOpPackage.so" "${HTP_DIR}/"
+else
+  echo "WARNING: heteroedge_op not found at ${HETEROEDGE_DIR}"
+  echo "  Build it first: cd ../fast_sync_test/heteroedge_op && bash build.sh"
 fi
 
-# Separate op packages (kept for test_graph_overhead unit test comparisons)
-SYNCWAIT_DIR="custom_op/build"
-RMSNORM_DIR="../rmsnorm/custom_op/build"
-if [ -d "${SYNCWAIT_DIR}" ]; then
-  adb push "${SYNCWAIT_DIR}/aarch64-android/libQnnHtpSyncWaitOpPackage.so" "${DEVICE_DIR}/"
-  adb push "${SYNCWAIT_DIR}/hexagon-v81/libQnnHtpSyncWaitOpPackage.so" "${HTP_DIR}/"
-fi
-if [ -d "${RMSNORM_DIR}" ]; then
-  adb push "${RMSNORM_DIR}/aarch64-android/libQnnHtpRmsNormOpPackage.so" "${DEVICE_DIR}/"
-  adb push "${RMSNORM_DIR}/hexagon-v81/libQnnHtpRmsNormOpPackage.so" "${HTP_DIR}/"
-fi
-
-adb shell "chmod 755 ${DEVICE_DIR}/fast_sync_test"
+adb shell "chmod 755 ${DEVICE_DIR}/sync_op_test"
 
 adb shell "cd ${DEVICE_DIR} && \
   export LD_LIBRARY_PATH=${LIB_DIR}:/vendor/lib64:\$LD_LIBRARY_PATH && \
   export ADSP_LIBRARY_PATH=${HTP_DIR} && \
-  ./fast_sync_test $*"
+  ./sync_op_test $*"
